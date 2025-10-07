@@ -1,7 +1,7 @@
 import pandas as pd
 
 # Caminho para o seu arquivo gigante
-input_file = "treatedBusDataOnlyRoute.csv"
+input_file = "rota_371.csv"
 output_file = "rota_371.csv"
 
 # Defina a rota que você quer
@@ -20,8 +20,8 @@ df = pd.concat(chunks)
 # Converte data + hora em datetime
 df['datetime'] = pd.to_datetime(df['date'] + " " + df['time'], format="%m-%d-%Y %H:%M:%S")
 
-# dia = "2019-01-25"
-# df = df[df['datetime'].dt.date == pd.to_datetime(dia).date()]
+dia = "2019-01-25"
+df = df[df['datetime'].dt.date == pd.to_datetime(dia).date()]
 
 # Ordena pelos critérios desejados
 df = df.sort_values(by=['line', 'order', 'datetime'])
