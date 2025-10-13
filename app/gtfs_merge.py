@@ -12,8 +12,8 @@ def time_to_seconds(time_str):
 
 # --- Step 2: Load your data ---
 gtfs_pasta = 'app/datasets/gtfs_rio-de-janeiro/' # Replace with your actual path
-stop_times = pd.read_csv(f'{gtfs_pasta}stop_times.txt')
-trips = pd.read_csv(f'{gtfs_pasta}trips.txt')
+stop_times = pd.read_csv(f'{gtfs_pasta}stop_times.csv')
+trips = pd.read_csv(f'{gtfs_pasta}trips.csv')
 # ... load other files as needed ...
 
 # --- Step 3: Apply the conversion BEFORE calculations ---
@@ -42,4 +42,4 @@ df['travel_time_seconds'] = df.groupby('trip_id')['arrival_seconds'].diff()
 
 # Display the result to verify
 print(df.head(10))
-df.to_csv('app/output/gtfs-rio-de-janeiro-merge-2.csv', index=False)
+df.to_csv('app/output/gtfs_rota_371.csv', index=False)
