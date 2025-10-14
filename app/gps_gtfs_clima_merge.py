@@ -3,7 +3,7 @@ import numpy as np
 from geopy.distance import geodesic
 
 # === 1️⃣ Ler os dados ===
-onibus = pd.read_csv("gtfs_gps_merged_by_order_parallel.csv")
+onibus = pd.read_csv("gtfs_gps_merged_by_order_parallel_vitor.csv")
 clima = pd.read_csv("app/output/clima/estacoes.csv")
 
 
