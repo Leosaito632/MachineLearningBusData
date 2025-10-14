@@ -21,7 +21,11 @@ estacoes = clima[["estacao", "latitude", "longitude"]
 
 
 def estacao_mais_proxima(lat, lon):
-    """Retorna o nome da estação mais próxima dado um par (lat, lon)."""
+    """Retorna o nome da estação mais próxima dado um par (lat, lon).
+    GPT disse isso
+    Aqui uso uma aproximação rápida (distância Euclidiana no plano), 
+    mas se quiser mais precisão, dá pra usar geopy.distance.geodesic.
+    """
     return estacoes.iloc[
         ((estacoes["latitude"] - lat)**2 +
          (estacoes["longitude"] - lon)**2).idxmin()
@@ -34,9 +38,11 @@ onibus["estacao"] = onibus.apply(
 
 # === 4️⃣ Ajustar hora para o merge temporal ===
 # Arredonda para a hora cheia
+# Ex: 09:25 → 09:00.
 onibus["datetime"] = onibus["arrival_real"].dt.floor("H")
 
 # === 5️⃣ Fazer o merge ===
+# Cada registro de ônibus recebe o clima da hora e estação mais próximas
 merged = pd.merge(
     onibus,
     clima,
