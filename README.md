@@ -8,4 +8,4 @@ https://interscity.org/open_data/
 ## GTFS SÃO PAULO
 https://www.sptrans.com.br/desenvolvedores/
 ## CLIMA
-https://bdmep.inmet.gov.br/$2a$10$vK2pQWQ3iRvIz9qAq5teio0m2DszsH9fEHB.03sXotiDtLFsdXO.zip
+https://bdmep.inmet.gov.br
