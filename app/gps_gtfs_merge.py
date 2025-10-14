@@ -18,11 +18,6 @@ INIT_TIME_TOL = pd.Timedelta("1h")
 PER_STOP_MAX_TOL = pd.Timedelta("2h")
 NUM_WORKERS = max(1, (os.cpu_count() or 2) - 1)  # ajuste se quiser
 
-# NOVOS PARÂMETROS PARA A HEURÍSTICA DE SEQUÊNCIA
-SEQUENCE_MATCH_LENGTH = 5 # Quantas paradas à frente vamos verificar?
-SEQUENCE_MATCH_TIME_TOL = pd.Timedelta("20min") # Tolerância de tempo para cada parada na sequência
-
-
 # ------------------ Caminhos (ajuste se necessário) ------------------
 GTFS_FILE = "app/output/gtfs/gtfs_rota_371.csv"
 GPS_FILE = "app/output/gps_371.csv"
@@ -87,20 +82,19 @@ def find_nearest_gps_in_set(stop_lat, stop_lon, time_ref, gps_subset, time_tol):
 # ------------------ Worker function (módulo-level) ------------------
 # A função precisa estar no nível do módulo para ser picklable pelo ProcessPool.
 def process_order_worker(order_id, gps_df, trips_grouped_local,
-                         dist_threshold_m, init_time_tol, per_stop_max_tol,
-                         # Adicionamos os novos parâmetros aqui
-                         sequence_length, sequence_time_tol):
+                         dist_threshold_m, init_time_tol, per_stop_max_tol):
     """
-    Processa um único order (ônibus) com heurística de pareamento de sequência.
-    Retorna lista de dicts (linhas resultantes).
+    Processa um único order (ônibus). Retorna lista de dicts (linhas resultantes).
+    gps_df: dataframe completo de GPS (será filtrado por order aqui).
+    trips_grouped_local: dict {trip_id: df_of_stops} com coluna 'arrival_td'.
     """
     results_local = []
     gps_order = gps_df[gps_df['order'] == order_id].sort_values('datetime').reset_index(drop=True)
     if gps_order.empty:
         return results_local
 
-    # MUDANÇA: Não usamos mais uma âncora fixa para o dia todo.
-    # O 'order_start' agora é calculado dinamicamente para cada viagem.
+    # anchor (inicio de atividade do ônibus)
+    order_start = gps_order['datetime'].min()
 
     assigned_trips = set()
     gps_pointer_idx = 0
@@ -111,186 +105,158 @@ def process_order_worker(order_id, gps_df, trips_grouped_local,
         start_lat = float(start_point['latitude'])
         start_lon = float(start_point['longitude'])
 
-        # 1) Busca de candidatos (Lógica de âncora dinâmica)
+        # 3) candidates
         candidates = []
         for trip_id, trip_df in trips_grouped_local.items():
             if trip_id in assigned_trips:
                 continue
             for si, stop in trip_df.iterrows():
-                stop_td = stop.get('arrival_td')
-                if pd.isna(stop_td): continue
-
-                # MUDANÇA CENTRAL: Em vez de usar uma âncora fixa, calculamos uma âncora hipotética
-                # para este pareamento específico.
-                hypothetical_anchor = start_time - stop_td
-                
-                # O horário previsto para a parada, baseado NESTA âncora, é o próprio `start_time`.
-                # Verificamos se outras paradas da viagem fazem sentido com esta âncora.
-                # A tolerância `init_time_tol` agora age como uma verificação de consistência.
-                # Ex: se o ônibus ligou às 4h mas a 1a parada é às 6h, a âncora seria ~6h.
-                
+                stop_td = stop.get('arrival_td', None)
+                if pd.isna(stop_td):
+                    continue
+                stop_time = order_start + stop_td
+                time_diff = start_time - stop_time
+                if abs(time_diff) > init_time_tol:
+                    continue
                 try:
                     d = distance_m(start_lat, start_lon, float(stop['stop_lat']), float(stop['stop_lon']))
                 except Exception:
                     continue
-                
                 if d <= dist_threshold_m:
-                    # Guardamos a âncora hipotética junto com o candidato
-                    candidates.append({
-                        'trip_id': trip_id,
-                        'stop_index': si,
-                        'stop_row': stop,
-                        'distance': d,
-                        'hypothetical_anchor': hypothetical_anchor
-                    })
+                    candidates.append((trip_id, si, stop, d, time_diff))
 
         if not candidates:
             gps_pointer_idx += 1
             continue
 
-        # 2) Desempate por PAREAMENTO DE SEQUÊNCIA (lógica nova e mais robusta)
-        trip_scores = []
-        
-        # Agrupa candidatos pela trip_id
+        # 4) desempate por heurística com próximo stop
         candidates_by_trip = {}
-        for cand in candidates:
-            candidates_by_trip.setdefault(cand['trip_id'], []).append(cand)
+        for trip_id, si, stop_row, d, tdiff in candidates:
+            candidates_by_trip.setdefault(trip_id, []).append((si, stop_row, d, tdiff))
 
+        trip_scores = []
         for trip_id, cand_list in candidates_by_trip.items():
-            # Para cada trip, pegamos o melhor candidato inicial (menor distância)
-            best_cand = min(cand_list, key=lambda x: x['distance'])
-            
+            cand_list_sorted = sorted(cand_list, key=lambda x: x[2])
+            si, stop_row, d, tdiff = cand_list_sorted[0]
             trip_df = trips_grouped_local[trip_id]
-            start_stop_index = best_cand['stop_index']
-            anchor = best_cand['hypothetical_anchor']
-            
-            # Agora, tentamos parear as próximas N paradas
-            matches_in_sequence = 0
-            total_dist_in_sequence = best_cand['distance'] # A primeira já "match"
-            last_match_time = start_time
-            
-            # Verificamos até N paradas à frente
-            for i in range(1, sequence_length):
-                next_stop_index = start_stop_index + i
-                if next_stop_index >= len(trip_df):
-                    break
-                
-                next_stop = trip_df.loc[next_stop_index]
-                next_stop_td = next_stop.get('arrival_td')
-                if pd.isna(next_stop_td):
+            if si + 1 < len(trip_df):
+                next_stop = trip_df.loc[si + 1]
+                next_td = next_stop.get('arrival_td', None)
+                if pd.isna(next_td):
+                    score = 1e6 + d
+                    trip_scores.append((trip_id, score, {'matched_stop_index': si, 'first_dist': d}))
                     continue
+                next_stop_time = order_start + next_td
+                gps_after = gps_order[gps_order['datetime'] > start_time]
+                if not gps_after.empty:
+                    next_row, next_d, next_time_diff = find_nearest_gps_in_set(
+                        next_stop['stop_lat'], next_stop['stop_lon'], next_stop_time, gps_after, time_tol=init_time_tol)
+                    if next_row is not None:
+                        sched_delta = (next_stop_time - (order_start + stop_row['arrival_td'])).total_seconds()
+                        gps_delta = (next_row['datetime'] - start_time).total_seconds()
+                        score = abs(gps_delta - sched_delta)
+                        trip_scores.append((trip_id, score, {
+                            'matched_stop_index': si,
+                            'first_stop_row': stop_row,
+                            'first_dist': d,
+                            'second_gps_row': next_row,
+                            'second_dist': next_d,
+                            'sched_delta': sched_delta,
+                            'gps_delta': gps_delta
+                        }))
+                        continue
+            score = 1e9 + d
+            trip_scores.append((trip_id, score, {'matched_stop_index': si, 'first_dist': d}))
 
-                # Usamos a ÂNCORA DINÂMICA para prever o horário da próxima parada
-                predicted_time = anchor + next_stop_td
-                
-                # Buscamos no GPS a partir do último ponto pareado
-                gps_search_set = gps_order[gps_order['datetime'] > last_match_time]
-                if gps_search_set.empty:
-                    break
+        trip_scores_sorted = sorted(trip_scores, key=lambda x: x[1])
+        chosen_trip_id, chosen_score, chosen_info = trip_scores_sorted[0]
 
-                row, dist, _ = find_nearest_gps_in_set(
-                    next_stop['stop_lat'], next_stop['stop_lon'], 
-                    predicted_time, gps_search_set, time_tol=sequence_time_tol
-                )
-
-                if row is not None and dist <= dist_threshold_m * 1.5: # um pouco mais tolerante na sequência
-                    matches_in_sequence += 1
-                    total_dist_in_sequence += dist
-                    last_match_time = row['datetime']
-
-            # O score prioriza quem teve mais paradas pareadas na sequência.
-            # A distância é o critério de desempate.
-            # Um número grande (1e9) é usado para penalizar fortemente sequências com menos matches.
-            score = (sequence_length - matches_in_sequence) * 1e9 + total_dist_in_sequence
-            trip_scores.append((score, trip_id, anchor))
-
-        if not trip_scores:
-            gps_pointer_idx += 1
-            continue
-
-        # Escolhe a trip com o menor score (melhor sequência)
-        chosen_score, chosen_trip_id, chosen_anchor = min(trip_scores, key=lambda x: x[0])
-        
-        # 3) Percorrer e casar TODAS as paradas da trip escolhida
+        # 5) percorrer stops da trip e casar
         trip_df = trips_grouped_local[chosen_trip_id]
         last_matched_time = start_time
         assigned_trips.add(chosen_trip_id)
 
-        # Coletar dados para o score de confiança
-        trip_results = []
-        stops_matched_count = 0
-        total_match_distance = 0.0
-
         for si, stop in trip_df.iterrows():
             stop_td = stop.get('arrival_td', None)
-            stop_data = {
-                'order': order_id, 'trip_id': chosen_trip_id,
-                'stop_sequence': stop.get('stop_sequence', si), 'stop_id': stop['stop_id'],
-                'stop_lat': stop['stop_lat'], 'stop_lon': stop['stop_lon'],
-                'arrival_previsto': pd.NaT, 'arrival_real': pd.NaT,
-                'atraso_min': None, 'matched_distance_m': None
-            }
-
             if pd.isna(stop_td):
-                trip_results.append(stop_data)
+                results_local.append({
+                    'order': order_id,
+                    'trip_id': chosen_trip_id,
+                    'stop_sequence': stop.get('stop_sequence', si),
+                    'stop_id': stop['stop_id'],
+                    'stop_lat': stop['stop_lat'],
+                    'stop_lon': stop['stop_lon'],
+                    'arrival_previsto': pd.NaT,
+                    'arrival_real': pd.NaT,
+                    'atraso_min': None,
+                    'matched_distance_m': None
+                })
                 continue
 
-            # A previsão é sempre baseada na ÂNCORA DINÂMICA da viagem
-            stop_time_previsto = chosen_anchor + stop_td
-            stop_data['arrival_previsto'] = stop_time_previsto
-            
-            # A busca no GPS começa a partir do último tempo real pareado
-            gps_search_set = gps_order[gps_order['datetime'] >= last_matched_time]
-            if gps_search_set.empty: gps_search_set = gps_order
-            
-            row_match, dist_m, _ = find_nearest_gps_in_set(
-                stop['stop_lat'], stop['stop_lon'], stop_time_previsto, 
-                gps_search_set, time_tol=per_stop_max_tol # Usamos a tolerância maior aqui
-            )
+            stop_time = order_start + stop_td
+            gps_search_set = gps_order[gps_order['datetime'] > last_matched_time]
+            if gps_search_set.empty:
+                gps_search_set = gps_order
 
-            if row_match is not None and dist_m is not None and dist_m <= dist_threshold_m:
-                arrival_real = row_match['datetime']
-                atraso_min = (arrival_real - stop_time_previsto).total_seconds() / 60.0
-                
-                stop_data.update({
+            tol = pd.Timedelta("5min")
+            matched = None
+            while tol <= per_stop_max_tol:
+                row_match, dist_m, time_diff = find_nearest_gps_in_set(stop['stop_lat'], stop['stop_lon'], stop_time, gps_search_set, time_tol=tol)
+                if row_match is not None:
+                    matched = (row_match, dist_m, time_diff)
+                    break
+                tol += pd.Timedelta("5min")
+
+            if matched is None:
+                results_local.append({
+                    'order': order_id,
+                    'trip_id': chosen_trip_id,
+                    'stop_sequence': stop.get('stop_sequence', si),
+                    'stop_id': stop['stop_id'],
+                    'stop_lat': stop['stop_lat'],
+                    'stop_lon': stop['stop_lon'],
+                    'arrival_previsto': stop_time,
+                    'arrival_real': pd.NaT,
+                    'atraso_min': None,
+                    'matched_distance_m': None
+                })
+            else:
+                gps_row, dist_m, time_diff = matched
+                arrival_real = gps_row['datetime']
+                atraso_min = (arrival_real - stop_time).total_seconds() / 60.0
+                results_local.append({
+                    'order': order_id,
+                    'trip_id': chosen_trip_id,
+                    'stop_sequence': stop.get('stop_sequence', si),
+                    'stop_id': stop['stop_id'],
+                    'stop_lat': stop['stop_lat'],
+                    'stop_lon': stop['stop_lon'],
+                    'arrival_previsto': stop_time,
                     'arrival_real': arrival_real,
                     'atraso_min': atraso_min,
                     'matched_distance_m': dist_m
                 })
-                
                 last_matched_time = arrival_real
-                stops_matched_count += 1
-                total_match_distance += dist_m
-            
-            trip_results.append(stop_data)
 
-        # 4) Adicionar o Score de Confiança aos resultados da viagem
-        total_stops = len(trip_df)
-        match_pct = (stops_matched_count / total_stops) if total_stops > 0 else 0
-        avg_dist = (total_match_distance / stops_matched_count) if stops_matched_count > 0 else None
-
-        for res in trip_results:
-            res['trip_match_pct'] = round(match_pct, 2)
-            res['trip_avg_distance_m'] = round(avg_dist, 2) if avg_dist is not None else None
-        
-        results_local.extend(trip_results)
-
-        # Mover ponteiro do GPS para depois da última correspondência
+        # mover ponteiro
         idxs_after = gps_order[gps_order['datetime'] > last_matched_time].index
-        gps_pointer_idx = int(idxs_after[0]) if len(idxs_after) > 0 else len(gps_order)
+        if len(idxs_after) > 0:
+            gps_pointer_idx = int(idxs_after[0])
+        else:
+            break
 
     return results_local
 
 # ------------------ Executando em paralelo ------------------
-# ------------------ Executando em paralelo ------------------
 all_results = []
 print(f"Starting parallel processing with {NUM_WORKERS} workers...")
 
+# We will pass gps and trips_grouped as args for each worker call.
+# For moderate dataset sizes this is fine. For very large ones consider alternative sharing.
 with ProcessPoolExecutor(max_workers=NUM_WORKERS) as exe:
-    # MUDANÇA AQUI: passe os novos parâmetros para a função worker
+    # submit futures
     futures = {exe.submit(process_order_worker, order_id, gps, trips_grouped,
-                          DIST_THRESHOLD_M, INIT_TIME_TOL, PER_STOP_MAX_TOL,
-                          SEQUENCE_MATCH_LENGTH, SEQUENCE_MATCH_TIME_TOL): order_id
+                          DIST_THRESHOLD_M, INIT_TIME_TOL, PER_STOP_MAX_TOL): order_id
                for order_id in orders}
 
     for fut in as_completed(futures):
