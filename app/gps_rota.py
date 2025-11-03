@@ -33,4 +33,4 @@ def filtrar_linha(linha, arquivo_saida, arquivo_entrada, dia=None):
     print(df.head())
 
 
-filtrar_linha(371, "gps_371", "treatedBusDataOnlyRoute.csv")
+filtrar_linha(309, "gps_309", "treatedBusDataOnlyRoute.csv")

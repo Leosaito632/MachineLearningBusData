@@ -34,4 +34,4 @@ def filtrar_linha(linha, arquivo_saida, gtfs_pasta):
     print("Arquivo salvo: "+arquivo_saida)
 
 
-filtrar_linha("1012-10", "gtfs-sao-paulo-merge", "gtfs_sao_paulo")
+filtrar_linha("309", "gtfs-rio-309", "gtfs_rio-de-janeiro")
