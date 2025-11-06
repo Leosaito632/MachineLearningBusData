@@ -1,0 +1,20 @@
+{
+  "target_type": "time_difference_minutes",
+  "validation": {
+    "mae_min": 2.1512556076049805,
+    "rmse_min": 4.849571814758394,
+    "r2": 0.013638436794281006
+  },
+  "test": {
+    "mae_min": 1.9004647731781006,
+    "rmse_min": 4.239252750839238,
+    "r2": 0.054959237575531006
+  },
+  "overfitting_gap_mae": -0.2507908344268799,
+  "abs_time_error_mean_min": 1.900464855676002,
+  "abs_time_error_median_min": 0.82568722965,
+  "n_train": 78775,
+  "n_val": 16880,
+  "n_test": 16882,
+  "n_features": 18
+}
